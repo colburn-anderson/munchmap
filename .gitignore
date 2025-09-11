@@ -44,3 +44,21 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# --- keep backend private + secrets ---
+api/
+.env*
+**/.env*
+
+# --- node/next build outputs ---
+node_modules/
+.next/
+dist/
+.vercel/
+
+# --- python caches/venv ---
+**/.venv/
+__pycache__/
+*.pyc
+
+# --- macOS cruft ---
+.DS_Store
