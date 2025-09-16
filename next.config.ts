@@ -1,19 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // keep your build green
   eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: true },
 
-  async rewrites() {
-    if (process.env.NODE_ENV !== "production") {
-      return [
-        {
-          source: "/api/:path*",
-          destination: "http://127.0.0.1:8000/api/:path*", // ← proxy to FastAPI in dev
-        },
-      ];
-    }
-    return [];
+  // Expose ONLY the maps key to the browser under your existing names
+  env: {
+    GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY,
+    google_maps_api_key: process.env.GOOGLE_MAPS_API_KEY,
+    // base URL used by the frontend to call your API in prod
+    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE,
   },
 };
 
