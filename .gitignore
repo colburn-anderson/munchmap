@@ -45,7 +45,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 # --- keep backend private + secrets ---
-api/
+/api/
 .env*
 **/.env*
 
@@ -62,3 +62,11 @@ __pycache__/
 
 # --- macOS cruft ---
 .DS_Store
+
+!src/
+!src/app/
+!src/app/api/
+!src/app/api/**
+!app/
+!app/api/
+!app/api/**
