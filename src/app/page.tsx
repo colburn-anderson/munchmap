@@ -128,23 +128,25 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResults([]);
+    setRaw(null);
     try {
       const q = query.trim();
+      if (!q) {
+        setError("Type something to search");
+        setLoading(false);
+        return;
+      }
 
-      // Build classic params from current UI controls
+      // Build params from your toggles
       const params = new URLSearchParams({
         hide_chains: String(tNoChains),
         open_now: String(tOpenNow),
       });
-
       if (tLateNight) params.set("open_after", "22:00");
       if (tVegan) params.set("diets", "Vegan");
-
-      // price: budget (<=2) or fancy (>=3). If both selected, keep defaults (0..4)
       if (tBudget && !tFancy) { params.set("price_max", "2"); params.set("price_min", "0"); }
       if (tFancy && !tBudget) { params.set("price_min", "3"); params.set("price_max", "4"); }
-
-      if (q) params.set("query", q);
+      params.set("query", q);
 
       if (lat !== null && lng !== null) {
         params.set("lat", String(lat));
@@ -154,12 +156,34 @@ export default function Home() {
         params.set("location", locationText);
       }
 
-      const classic = await fetchJSONWithTimeout<{ results?: Place[] }>(
-        `/api/search?` + params.toString(),
-        8000
-      );
+      const json = await fetchJSONWithTimeout<any>(`/api/search?${params.toString()}`, 10000, {
+        method: "GET",
+        cache: "no-store",
+      });
 
-      setResults((classic.results || []) as Place[]);
+      // Save raw for debugging + console
+      setRaw(json);
+      console.log("SEARCH /api/search response ->", json);
+
+      // Be liberal about the key the backend uses
+      const arr: any[] =
+        (Array.isArray(json) ? json :
+        json?.results ??
+        json?.places ??
+        json?.businesses ??
+        json?.data ??
+        []);
+
+      if (!Array.isArray(arr)) {
+        setError("API returned an unexpected shape");
+        setResults([]);
+      } else {
+        setResults(arr as Place[]);
+        if (arr.length === 0) {
+          // Show a gentle hint if API came back empty
+          setError("No results. Try broadening filters or radius.");
+        }
+      }
     } catch (e: any) {
       setError(e?.message || "Failed to search");
     } finally {
