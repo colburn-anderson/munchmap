@@ -1,17 +1,17 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // keep your build green
   eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: true },
 
-  // If you want the Google key on the client, prefer NEXT_PUBLIC_GOOGLE_MAPS_API_KEY.
-  // Keeping this here is okay for now, but be mindful these are exposed to the client bundle.
+  // Expose ONLY the maps key to the browser under your existing names
   env: {
     GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY,
     google_maps_api_key: process.env.GOOGLE_MAPS_API_KEY,
+    // base URL used by the frontend to call your API in prod
+    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE,
   },
-
-  // IMPORTANT: no rewrites touching /api/* so Next.js API routes handle them.
 };
 
 export default nextConfig;
