@@ -121,6 +121,8 @@ export default function Home() {
     );
   };
 
+  const [raw, setRaw] = useState<any>(null);
+
   /* main search: call ONLY /api/search (remove /api/ai/search dependency) */
   const runSearch = async () => {
     setLoading(true);
@@ -287,6 +289,14 @@ export default function Home() {
         <section className="mt-8">
           {error && <div className="mb-3 text-rose-400 text-sm">Error: {error}</div>}
           <ResultsList results={results} unit={unit} />
+          {raw && (
+            <details className="mt-4 text-sm text-neutral-300">
+              <summary className="cursor-pointer">Debug: raw /api/search JSON</summary>
+              <pre className="mt-2 p-3 bg-neutral-950 border border-white/10 rounded overflow-auto">
+                {JSON.stringify(raw, null, 2)}
+              </pre>
+            </details>
+          )}
         </section>
       </div>
 
