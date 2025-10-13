@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import ResultsList from "./components/ResultsList";
-import type { Place, Unit } from "./components/RestaurantCard";
+import ResultsList from "../components/ResultsList";
+import type { Place, Unit } from "../components/RestaurantCard";
 
 /* ---------- helpers ---------- */
 const KM_TO_MI = 0.621371;
