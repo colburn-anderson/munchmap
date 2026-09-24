@@ -6,13 +6,14 @@ node_modules/
 out/
 dist/
 
-# Environment files — never commit secrets
+# Environment files — never commit secrets (.env.example is the template)
 .env
 .env.local
 .env*.local
 api/.env
 
 # Python
+.venv/
 api/.venv/
 **/__pycache__/
 *.py[cod]
@@ -31,5 +32,4 @@ Thumbs.db
 *.pem
 *.docx
 *.bak
-package-lock.json
 *.log
