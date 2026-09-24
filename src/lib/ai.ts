@@ -63,9 +63,12 @@ export function aiEnabled(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
-export async function interpretQuery(query: string): Promise<AiFilters | null> {
+/** Result of interpretation; `error` is a short, non-secret reason when AI was skipped or failed. */
+export type AiResult = { filters: AiFilters | null; error?: string };
+
+export async function interpretQuery(query: string): Promise<AiResult> {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) return null;
+  if (!key) return { filters: null, error: "not_configured" };
 
   try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -84,15 +87,18 @@ export async function interpretQuery(query: string): Promise<AiFilters | null> {
       signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     });
     if (!res.ok) {
-      console.warn(`[ai] OpenAI HTTP ${res.status}; falling back to classic filters`);
-      return null;
+      // OpenAI error codes like "insufficient_quota" or "model_not_found" are safe to surface.
+      const body = await res.json().catch(() => null);
+      const code = typeof body?.error?.code === "string" ? body.error.code : undefined;
+      console.warn(`[ai] OpenAI HTTP ${res.status} ${code ?? ""}; falling back to classic filters`);
+      return { filters: null, error: `http_${res.status}${code ? `_${code}` : ""}` };
     }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") return null;
-    return sanitize(JSON.parse(content));
+    if (typeof content !== "string") return { filters: null, error: "empty_response" };
+    return { filters: sanitize(JSON.parse(content)) };
   } catch (e) {
     console.warn("[ai] interpretation failed; falling back to classic filters:", e instanceof Error ? e.message : e);
-    return null;
+    return { filters: null, error: e instanceof Error && e.name === "TimeoutError" ? "timeout" : "request_failed" };
   }
 }

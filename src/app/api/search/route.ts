@@ -65,10 +65,11 @@ export async function GET(req: Request) {
     const radiusM = Math.max(500, Math.min(num(sp.get("radius_m")) ?? DEFAULT_RADIUS_M, 50000));
 
     // AI interpretation and geocoding the location box are independent, so run them together.
-    const [ai, boxCenter] = await Promise.all([
+    const [aiResult, boxCenter] = await Promise.all([
       interpretQuery(query),
       !gps && boxLocation ? geocode(boxLocation) : Promise.resolve(null),
     ]);
+    const ai = aiResult.filters;
 
     // A place named in the query ("tacos in Austin") beats the location box and GPS.
     let center: LatLng | undefined = gps ?? boxCenter ?? undefined;
@@ -127,6 +128,7 @@ export async function GET(req: Request) {
       hide_chains: hideChains,
       radius_m: radiusM,
       ai: ai !== null,
+      ai_error: aiResult.error,
     };
 
     return NextResponse.json<SearchResponse>({ ok: true, count: results.length, center, filters, results });

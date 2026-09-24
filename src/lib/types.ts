@@ -29,6 +29,7 @@ export type AppliedFilters = {
   hide_chains: boolean;
   radius_m: number;
   ai: boolean; // whether the AI interpreter contributed
+  ai_error?: string; // short reason AI was skipped/failed, e.g. "http_429_insufficient_quota"
 };
 
 export type SearchResponse =
