@@ -1,39 +1,51 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ResultsList from "./components/ResultsList";
-import type { Place, Unit } from "./components/RestaurantCard";
+import type { AppliedFilters, Place, SearchResponse, Unit } from "@/lib/types";
 
 /* ---------- helpers ---------- */
-const KM_TO_MI = 0.621371;
+type Theme = "system" | "light" | "dark";
 const unitLabel = (u: Unit) => (u === "mi" ? "mi" : "km");
 const toMeters = (value: number, unit: Unit) =>
   Math.round(value * (unit === "mi" ? 1609.34 : 1000));
 
-function applyTheme(theme: "system" | "light" | "dark") {
+function applyTheme(theme: Theme) {
   if (typeof window === "undefined") return;
   const root = document.documentElement;
   const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
   const isDark = theme === "dark" || (theme === "system" && prefersDark);
   root.classList.toggle("dark", !!isDark);
-  localStorage.setItem("mm_theme", theme);
+  try { localStorage.setItem("mm_theme", theme); } catch {}
 }
 
-/** Fetch JSON with a hard timeout so UI never hangs */
-async function fetchJSONWithTimeout<T = any>(
-  url: string,
-  timeoutMs = 8000,
-  init?: RequestInit
-): Promise<T> {
+/** Fetch JSON with a hard timeout so UI never hangs; surfaces the API's error message. */
+async function fetchJSONWithTimeout<T>(url: string, timeoutMs = 15000): Promise<T> {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...init, signal: ctrl.signal, cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as T;
+    const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+    return body as T;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw new Error("Search timed out — try again.");
+    throw e;
   } finally {
     clearTimeout(id);
   }
+}
+
+function describeFilters(f: AppliedFilters): string {
+  const parts = [`“${f.query}”`];
+  if (f.open_now) parts.push("open now");
+  if (f.open_after) parts.push(`open at ${f.open_after}`);
+  if (f.price_min !== undefined || f.price_max !== undefined) {
+    const lo = Math.max(1, f.price_min ?? 1), hi = f.price_max ?? 4;
+    parts.push(lo === hi ? "$".repeat(lo) : `${"$".repeat(lo)}–${"$".repeat(hi)}`);
+  }
+  if (f.hide_chains) parts.push("no chains");
+  return parts.join(" · ");
 }
 
 /* ---------- tiny chip ---------- */
@@ -49,11 +61,12 @@ function Chip({
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       className={
-        "rounded-full px-3 py-1.5 text-sm transition " +
+        "rounded-full px-3 py-1.5 text-sm transition border " +
         (active
-          ? "bg-emerald-500/20 text-emerald-200 border border-emerald-400/30"
-          : "bg-white/5 text-neutral-300 hover:bg-white/10 border border-white/10")
+          ? "bg-emerald-500/15 text-emerald-700 border-emerald-500/30 dark:bg-emerald-500/20 dark:text-emerald-200 dark:border-emerald-400/30"
+          : "bg-black/5 text-neutral-700 hover:bg-black/10 border-black/10 dark:bg-white/5 dark:text-neutral-300 dark:hover:bg-white/10 dark:border-white/10")
       }
     >
       {children}
@@ -66,8 +79,8 @@ function Chip({
 export default function Home() {
   /* location + radius */
   const [locationText, setLocationText] = useState("Detroit, MI");
-  const [lat, setLat] = useState<number | null>(null);
-  const [lng, setLng] = useState<number | null>(null);
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [locating, setLocating] = useState(false);
   const [unit, setUnit] = useState<Unit>("mi");
   const [radiusValue, setRadiusValue] = useState(5); // in current unit
 
@@ -80,112 +93,126 @@ export default function Home() {
   const [tFancy, setTFancy] = useState(false);         // price >= 3
 
   /* theme + ui state */
-  const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
+  const [theme, setTheme] = useState<Theme>("dark");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<Place[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [applied, setApplied] = useState<AppliedFilters | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [raw, setRaw] = useState<SearchResponse | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
 
   const radiusMeters = useMemo(() => toMeters(radiusValue, unit), [radiusValue, unit]);
 
   /* persist unit/theme */
   useEffect(() => {
     try {
-      const savedUnit = (localStorage.getItem("mm_unit") as Unit) || "mi";
-      const savedTheme = (localStorage.getItem("mm_theme") as "system" | "light" | "dark") || "system";
-      setUnit(savedUnit);
-      setTheme(savedTheme);
-      applyTheme(savedTheme);
+      const savedUnit = localStorage.getItem("mm_unit");
+      const savedTheme = localStorage.getItem("mm_theme");
+      if (savedUnit === "mi" || savedUnit === "km") setUnit(savedUnit);
+      if (savedTheme === "system" || savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
     } catch {}
   }, []);
   useEffect(() => {
     try { localStorage.setItem("mm_unit", unit); } catch {}
   }, [unit]);
-  useEffect(() => { applyTheme(theme); }, [theme]);
+  useEffect(() => {
+    applyTheme(theme);
+    if (theme !== "system") return;
+    // Follow OS changes while on "System".
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("system");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [theme]);
+
+  /* ⌘K / Ctrl+K focuses the search box, Esc closes settings */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchInput.current?.focus();
+      } else if (e.key === "Escape") {
+        setShowSettings(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   /* geolocation */
-  const useMyLocation = () => {
+  const locateMe = () => {
+    if (coords) {
+      setCoords(null); // toggle back to the typed location
+      return;
+    }
     if (!navigator.geolocation) {
       setError("Geolocation not supported by this browser.");
       return;
     }
     setError(null);
+    setLocating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setLat(pos.coords.latitude);
-        setLng(pos.coords.longitude);
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setLocating(false);
       },
-      (err) => setError(err.message || "Failed to get location"),
-      { enableHighAccuracy: true, timeout: 10000 }
+      (err) => {
+        setError(err.code === err.PERMISSION_DENIED ? "Location permission denied — type a city or ZIP instead." : err.message || "Failed to get location");
+        setLocating(false);
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 5 * 60 * 1000 }
     );
   };
 
-  const [raw, setRaw] = useState<any>(null);
-
-  /* main search: call ONLY /api/search (remove /api/ai/search dependency) */
+  /* main search */
   const runSearch = async () => {
+    if (loading) return;
+    const q = query.trim();
+    if (!q) {
+      setError("Type something to search");
+      searchInput.current?.focus();
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    setNotice(null);
     setResults([]);
+    setApplied(null);
     setRaw(null);
     try {
-      const q = query.trim();
-      if (!q) {
-        setError("Type something to search");
-        setLoading(false);
-        return;
-      }
-
-      // Build params from your toggles
       const params = new URLSearchParams({
+        query: q,
         hide_chains: String(tNoChains),
         open_now: String(tOpenNow),
       });
       if (tLateNight) params.set("open_after", "22:00");
       if (tVegan) params.set("diets", "Vegan");
-      if (tBudget && !tFancy) { params.set("price_max", "2"); params.set("price_min", "0"); }
+      if (tBudget && !tFancy) { params.set("price_min", "1"); params.set("price_max", "2"); }
       if (tFancy && !tBudget) { params.set("price_min", "3"); params.set("price_max", "4"); }
-      params.set("query", q);
 
-      if (lat !== null && lng !== null) {
-        params.set("lat", String(lat));
-        params.set("lng", String(lng));
+      if (coords) {
+        params.set("lat", String(coords.lat));
+        params.set("lng", String(coords.lng));
         params.set("radius_m", String(radiusMeters));
       } else {
         params.set("location", locationText);
       }
 
-      const json = await fetchJSONWithTimeout<any>(`/api/search?${params.toString()}`, 10000, {
-        method: "GET",
-        cache: "no-store",
-      });
-
-      // Save raw for debugging + console
+      const json = await fetchJSONWithTimeout<SearchResponse>(`/api/search?${params.toString()}`);
       setRaw(json);
-      console.log("SEARCH /api/search response ->", json);
+      if (!json.ok) throw new Error(json.error);
 
-      // Be liberal about the key the backend uses
-      const arr: any[] =
-        (Array.isArray(json) ? json :
-        json?.results ??
-        json?.places ??
-        json?.businesses ??
-        json?.data ??
-        []);
-
-      if (!Array.isArray(arr)) {
-        setError("API returned an unexpected shape");
-        setResults([]);
-      } else {
-        setResults(arr as Place[]);
-        if (arr.length === 0) {
-          // Show a gentle hint if API came back empty
-          setError("No results. Try broadening filters or radius.");
-        }
+      setResults(json.results);
+      setApplied(json.filters);
+      if (json.results.length === 0) {
+        setNotice("No results. Try broadening filters or radius.");
       }
-    } catch (e: any) {
-      setError(e?.message || "Failed to search");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to search");
     } finally {
       setLoading(false);
     }
@@ -196,16 +223,16 @@ export default function Home() {
   const rangeMax = unit === "mi" ? 25 : 40;
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-neutral-950 to-neutral-900 text-white">
+    <main className="min-h-screen bg-gradient-to-b from-neutral-50 to-neutral-100 text-neutral-900 dark:from-neutral-950 dark:to-neutral-900 dark:text-white">
       <div className="mx-auto max-w-6xl px-4 pt-10 pb-16">
         {/* Header */}
         <header className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-semibold tracking-tight">
-            <span className="text-emerald-400">Munch</span>map
+            <span className="text-emerald-500 dark:text-emerald-400">Munch</span>map
           </h1>
           <button
             onClick={() => setShowSettings(true)}
-            className="rounded-full px-3 py-1.5 border border-white/15 hover:bg-white/5 transition"
+            className="rounded-full px-3 py-1.5 border border-black/15 hover:bg-black/5 dark:border-white/15 dark:hover:bg-white/5 transition"
             aria-label="Open settings"
           >
             ⚙️ Settings
@@ -213,8 +240,8 @@ export default function Home() {
         </header>
 
         {/* Hero Search */}
-        <section className="rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur p-6 md:p-8">
-          <h2 className="text-xl md:text-2xl font-medium text-neutral-200 mb-4">
+        <section className="rounded-3xl border border-black/10 bg-white/70 dark:border-white/10 dark:bg-neutral-900/60 backdrop-blur p-6 md:p-8">
+          <h2 className="text-xl md:text-2xl font-medium text-neutral-800 dark:text-neutral-200 mb-4">
             Find a spot you’ll actually love.
           </h2>
 
@@ -222,25 +249,28 @@ export default function Home() {
           <div className="flex flex-col gap-3 md:flex-row md:items-center">
             <div className="relative flex-1">
               <input
+                ref={searchInput}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && runSearch()}
                 placeholder="e.g., late-night vegan tacos, cozy Korean BBQ, cheap Ethiopian"
-                className="w-full rounded-xl bg-neutral-950 border border-white/10 px-4 py-3 pr-12 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                aria-label="What are you hungry for?"
+                className="w-full rounded-xl bg-white border border-black/10 dark:bg-neutral-950 dark:border-white/10 px-4 py-3 pr-12 placeholder:text-neutral-400 dark:placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
               />
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-600">⌘K</span>
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-600">⌘K</span>
             </div>
 
             <div className="flex gap-2">
               <button
-                onClick={useMyLocation}
-                className="rounded-xl border border-white/10 px-3 py-3 bg-white/5 hover:bg-white/10 text-sm"
+                onClick={locateMe}
+                disabled={locating}
+                className="rounded-xl border border-black/10 bg-black/5 hover:bg-black/10 dark:border-white/10 px-3 py-3 dark:bg-white/5 dark:hover:bg-white/10 text-sm disabled:opacity-50"
               >
-                Use my location
+                {locating ? "Locating…" : coords ? "📍 Using your location" : "Use my location"}
               </button>
               <button
                 onClick={runSearch}
-                className="rounded-xl px-4 py-3 bg-white text-black text-sm font-medium hover:bg-neutral-200 transition disabled:opacity-50"
+                className="rounded-xl px-4 py-3 bg-neutral-900 text-white hover:bg-neutral-700 dark:bg-white dark:text-black text-sm font-medium dark:hover:bg-neutral-200 transition disabled:opacity-50"
                 disabled={loading}
               >
                 {loading ? "Searching…" : "Search"}
@@ -254,52 +284,62 @@ export default function Home() {
             <Chip active={tNoChains} onClick={() => setTNoChains(v => !v)}>No chains</Chip>
             <Chip active={tLateNight} onClick={() => setTLateNight(v => !v)}>Late night</Chip>
             <Chip active={tVegan} onClick={() => setTVegan(v => !v)}>Vegan</Chip>
-            <Chip active={tBudget} onClick={() => setTBudget(v => !v)}>Budget</Chip>
-            <Chip active={tFancy} onClick={() => setTFancy(v => !v)}>Fancy</Chip>
+            <Chip active={tBudget} onClick={() => { setTBudget(v => !v); setTFancy(false); }}>Budget</Chip>
+            <Chip active={tFancy} onClick={() => { setTFancy(v => !v); setTBudget(false); }}>Fancy</Chip>
           </div>
 
           {/* Location / Radius – compact row */}
-          <div className="mt-5 grid gap-3 md:grid-cols-[1fr,auto] md:items-center">
-            {!lat && !lng ? (
+          <div className="mt-5 grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+            {!coords ? (
               <div className="flex items-center gap-2">
-                <span className="w-24 text-sm text-neutral-300">Location</span>
+                <span className="w-24 text-sm text-neutral-600 dark:text-neutral-300">Location</span>
                 <input
                   value={locationText}
                   onChange={(e) => setLocationText(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && runSearch()}
                   placeholder="Detroit, MI or 48226"
-                  className="flex-1 rounded-lg bg-neutral-950 border border-white/10 px-3 py-2 placeholder:text-neutral-600"
+                  aria-label="Location"
+                  className="flex-1 rounded-lg bg-white border border-black/10 dark:bg-neutral-950 dark:border-white/10 px-3 py-2 placeholder:text-neutral-400 dark:placeholder:text-neutral-600"
                 />
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="w-24 text-sm text-neutral-300">Radius</span>
+                <span className="w-24 text-sm text-neutral-600 dark:text-neutral-300">Radius</span>
                 <input
                   type="range"
                   min={rangeMin}
                   max={rangeMax}
                   step={1}
-                  value={radiusValue}
+                  value={Math.min(Math.max(radiusValue, rangeMin), rangeMax)}
                   onChange={(e) => setRadiusValue(Number(e.target.value))}
+                  aria-label="Search radius"
+                  className="accent-emerald-500"
                 />
-                <span className="text-sm text-neutral-300">
+                <span className="text-sm text-neutral-600 dark:text-neutral-300">
                   {radiusValue} {unitLabel(unit)}
                 </span>
+                <button
+                  onClick={() => setCoords(null)}
+                  className="ml-2 text-xs text-neutral-500 underline underline-offset-4 hover:text-neutral-700 dark:hover:text-neutral-300"
+                >
+                  Type a location instead
+                </button>
               </div>
             )}
 
             <div className="flex items-center justify-end gap-4">
               <div className="flex items-center gap-2 text-sm">
-                <span className="text-neutral-300">Units</span>
-                <div className="inline-flex rounded-full bg-white/5 p-0.5">
+                <span className="text-neutral-600 dark:text-neutral-300">Units</span>
+                <div className="inline-flex rounded-full bg-black/5 dark:bg-white/5 p-0.5">
                   <button
                     onClick={() => setUnit("mi")}
-                    className={`px-2 py-1 rounded-full ${unit === "mi" ? "bg-emerald-500/20 text-emerald-200" : "text-neutral-300"}`}
+                    className={`px-2 py-1 rounded-full ${unit === "mi" ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-200" : "text-neutral-600 dark:text-neutral-300"}`}
                   >
                     mi
                   </button>
                   <button
                     onClick={() => setUnit("km")}
-                    className={`px-2 py-1 rounded-full ${unit === "km" ? "bg-emerald-500/20 text-emerald-200" : "text-neutral-300"}`}
+                    className={`px-2 py-1 rounded-full ${unit === "km" ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-200" : "text-neutral-600 dark:text-neutral-300"}`}
                   >
                     km
                   </button>
@@ -310,13 +350,24 @@ export default function Home() {
         </section>
 
         {/* Results */}
-        <section className="mt-8">
-          {error && <div className="mb-3 text-rose-400 text-sm">Error: {error}</div>}
-          <ResultsList results={results} unit={unit} />
-          {raw && (
-            <details className="mt-4 text-sm text-neutral-300">
+        <section className="mt-8" aria-live="polite">
+          {error && <div className="mb-3 text-rose-600 dark:text-rose-400 text-sm">Error: {error}</div>}
+          {applied && (
+            <p className="mb-3 text-xs text-neutral-500">
+              {applied.ai && <span className="text-emerald-600 dark:text-emerald-400">✨ AI · </span>}
+              {describeFilters(applied)} · {results.length} result{results.length === 1 ? "" : "s"}
+            </p>
+          )}
+          {notice && <p className="mb-3 text-sm text-neutral-500 dark:text-neutral-400">{notice}</p>}
+          {loading ? (
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">Searching…</p>
+          ) : (
+            !notice && <ResultsList results={results} unit={unit} />
+          )}
+          {raw && process.env.NODE_ENV === "development" && (
+            <details className="mt-4 text-sm text-neutral-600 dark:text-neutral-300">
               <summary className="cursor-pointer">Debug: raw /api/search JSON</summary>
-              <pre className="mt-2 p-3 bg-neutral-950 border border-white/10 rounded overflow-auto">
+              <pre className="mt-2 p-3 bg-white border border-black/10 dark:bg-neutral-950 dark:border-white/10 rounded overflow-auto">
                 {JSON.stringify(raw, null, 2)}
               </pre>
             </details>
@@ -328,12 +379,17 @@ export default function Home() {
       {showSettings && (
         <>
           <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowSettings(false)} aria-hidden />
-          <div className="fixed right-0 top-0 h-full w-80 max-w-[90%] bg-neutral-950 z-50 shadow-2xl border-l border-white/10 p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Settings"
+            className="fixed right-0 top-0 h-full w-80 max-w-[90%] bg-white dark:bg-neutral-950 z-50 shadow-2xl border-l border-black/10 dark:border-white/10 p-4 overflow-y-auto"
+          >
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold">Settings</h2>
               <button
                 onClick={() => setShowSettings(false)}
-                className="px-2 py-1 rounded hover:bg-white/5"
+                className="px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/5"
                 aria-label="Close settings"
               >
                 ✕
@@ -360,12 +416,12 @@ export default function Home() {
               </section>
               <section>
                 <h3 className="text-sm font-medium mb-2">About</h3>
-                <p className="text-sm text-neutral-400">Munchmap uses AI + real data to surface small spots you’ll love.</p>
+                <p className="text-sm text-neutral-500 dark:text-neutral-400">Munchmap uses AI + real data to surface small spots you’ll love.</p>
               </section>
             </div>
 
             <div className="mt-6">
-              <button onClick={() => setShowSettings(false)} className="w-full rounded-lg bg-white text-black py-2 hover:bg-neutral-200 transition">
+              <button onClick={() => setShowSettings(false)} className="w-full rounded-lg bg-neutral-900 text-white hover:bg-neutral-700 dark:bg-white dark:text-black py-2 dark:hover:bg-neutral-200 transition">
                 Close
               </button>
             </div>

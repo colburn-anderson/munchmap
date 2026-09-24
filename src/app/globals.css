@@ -1,9 +1,12 @@
 @import "tailwindcss";
 
-/* Make dark the default and ensure readable colors */
+/* Tailwind v4: drive `dark:` from the .dark class on <html> (set by the theme setting). */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
-  html { color-scheme: dark; }
-  body { @apply bg-neutral-950 text-gray-100 antialiased; }
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+  body { @apply bg-neutral-50 text-neutral-900 antialiased dark:bg-neutral-950 dark:text-gray-100; }
 }
 
 /* Nice selection color */
